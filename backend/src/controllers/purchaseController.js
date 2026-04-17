@@ -3,13 +3,16 @@ const Product = require("../models/Product");
 const asyncHandler = require("../utils/asyncHandler");
 const { changeStock } = require("../services/inventoryService");
 
+// GET /purchases
 const listPurchases = asyncHandler(async (req, res) => {
   const purchases = await Purchase.find({})
     .populate("supplier", "name phone")
+    .populate("items.product", "name sku")
     .sort({ createdAt: -1 });
   res.json({ data: purchases });
 });
 
+// POST /purchases
 const createPurchase = asyncHandler(async (req, res) => {
   const { supplierId, items, notes } = req.body;
 
@@ -25,7 +28,7 @@ const createPurchase = asyncHandler(async (req, res) => {
     const product = await Product.findById(item.productId);
     if (!product) {
       res.status(404);
-      throw new Error("Product not found");
+      throw new Error(`Product not found: ${item.productId}`);
     }
 
     const lineTotal = Number(item.quantity) * Number(item.unitCost);
@@ -44,9 +47,11 @@ const createPurchase = asyncHandler(async (req, res) => {
     items: normalizedItems,
     totalAmount,
     notes: notes || "",
+    status: "received", // FIX: track purchase status
     createdBy: req.user._id
   });
 
+  // Update stock for each item
   for (const item of normalizedItems) {
     await changeStock({
       productId: item.product,
@@ -62,7 +67,28 @@ const createPurchase = asyncHandler(async (req, res) => {
   res.status(201).json(purchase);
 });
 
-module.exports = {
-  listPurchases,
-  createPurchase
-};
+// PUT /purchases/:id/status
+const updatePurchaseStatus = asyncHandler(async (req, res) => {
+  const { status } = req.body;
+  const validStatuses = ["pending", "received", "cancelled"];
+
+  if (!validStatuses.includes(status)) {
+    res.status(400);
+    throw new Error("Invalid status");
+  }
+
+  const purchase = await Purchase.findByIdAndUpdate(
+    req.params.id,
+    { status },
+    { new: true }
+  ).populate("supplier", "name phone");
+
+  if (!purchase) {
+    res.status(404);
+    throw new Error("Purchase not found");
+  }
+
+  res.json(purchase);
+});
+
+module.exports = { listPurchases, createPurchase, updatePurchaseStatus };

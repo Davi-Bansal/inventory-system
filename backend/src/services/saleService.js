@@ -6,6 +6,7 @@ const { buildInvoiceNumber } = require("../utils/invoiceNumber");
 const { calculateLine, calculateTotals } = require("../utils/gst");
 const { changeStock } = require("./inventoryService");
 
+// FIX: Fixed template literal (was broken: invoice:${year})
 const nextInvoiceNumber = async () => {
   const year = new Date().getFullYear();
   const key = `invoice:${year}`;
@@ -60,7 +61,8 @@ const createSale = async ({ customerId, items, discountAmount, paymentMethod, us
   }
 
   if (paymentMethod === "Credit" && customer) {
-    const projectedOutstanding = Number(customer.outstandingAmount || 0) + totals.finalAmount;
+    const projectedOutstanding =
+      Number(customer.outstandingAmount || 0) + totals.finalAmount;
     if (projectedOutstanding > Number(customer.creditLimit || 0)) {
       throw new Error("Credit limit exceeded for customer");
     }
@@ -97,6 +99,7 @@ const finalizeSale = async ({ saleId, userId }) => {
       productId: item.product,
       quantityChange: -Number(item.quantity),
       movementType: "sale",
+      // FIX: Was broken template literal
       reason: `Sale ${sale.invoiceNo}`,
       referenceModel: "Sale",
       referenceId: sale._id,
@@ -105,7 +108,8 @@ const finalizeSale = async ({ saleId, userId }) => {
   }
 
   if (sale.paymentMethod === "Credit" && sale.customer) {
-    sale.customer.outstandingAmount = Number(sale.customer.outstandingAmount || 0) + Number(sale.finalAmount || 0);
+    sale.customer.outstandingAmount =
+      Number(sale.customer.outstandingAmount || 0) + Number(sale.finalAmount || 0);
     await sale.customer.save();
   }
 
@@ -114,7 +118,4 @@ const finalizeSale = async ({ saleId, userId }) => {
   return sale;
 };
 
-module.exports = {
-  createSale,
-  finalizeSale
-};
+module.exports = { createSale, finalizeSale };

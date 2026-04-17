@@ -3,8 +3,11 @@ const Product = require("../models/Product");
 const asyncHandler = require("../utils/asyncHandler");
 const { changeStock } = require("../services/inventoryService");
 
+// GET /inventory
 const listInventory = asyncHandler(async (req, res) => {
-  const docs = await Inventory.find({}).populate("product", "name sku category lowStockThreshold").sort({ updatedAt: -1 });
+  const docs = await Inventory.find({})
+    .populate("product", "name sku category lowStockThreshold")
+    .sort({ updatedAt: -1 });
 
   const data = docs.map((entry) => ({
     id: entry._id,
@@ -18,6 +21,7 @@ const listInventory = asyncHandler(async (req, res) => {
   res.json({ data });
 });
 
+// POST /inventory/adjust
 const adjustInventory = asyncHandler(async (req, res) => {
   const { productId, adjustment, reason } = req.body;
 
@@ -40,6 +44,7 @@ const adjustInventory = asyncHandler(async (req, res) => {
   res.json({ message: "Stock adjusted", data: updated });
 });
 
+// GET /inventory/low-stock
 const lowStock = asyncHandler(async (req, res) => {
   const docs = await Inventory.aggregate([
     {
@@ -53,18 +58,12 @@ const lowStock = asyncHandler(async (req, res) => {
     { $unwind: "$product" },
     {
       $match: {
-        $expr: {
-          $lte: ["$quantity", "$product.lowStockThreshold"]
-        }
+        $expr: { $lte: ["$quantity", "$product.lowStockThreshold"] }
       }
     }
   ]);
 
-  res.json({ data: docs });
+  res.json({ data: docs, count: docs.length });
 });
 
-module.exports = {
-  listInventory,
-  adjustInventory,
-  lowStock
-};
+module.exports = { listInventory, adjustInventory, lowStock };
