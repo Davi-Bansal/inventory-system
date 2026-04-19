@@ -1,4 +1,6 @@
+
 const path = require("path");
+const fs = require("fs");
 const Product = require("../models/Product");
 const Inventory = require("../models/Inventory");
 const asyncHandler = require("../utils/asyncHandler");
@@ -7,11 +9,14 @@ const bwipjs = require("bwip-js");
 const multer = require("multer");
 const { logAudit } = require("../services/auditService");
 
-// ── Multer storage ────────────────────────────────────────────────────────────
+// Auto-create uploads folder if it doesn't exist — fixes ENOENT crash
+const uploadDir = path.join(__dirname, "../../uploads/products");
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, path.join(__dirname, "../../uploads/products"));
-  },
+  destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname);
     cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
@@ -19,22 +24,17 @@ const storage = multer.diskStorage({
 });
 
 const fileFilter = (req, file, cb) => {
-  if (file.mimetype.startsWith("image/")) {
-    cb(null, true);
-  } else {
-    cb(new Error("Only image files are allowed"), false);
-  }
+  if (file.mimetype.startsWith("image/")) cb(null, true);
+  else cb(new Error("Only image files are allowed"), false);
 };
 
 const upload = multer({ storage, fileFilter, limits: { fileSize: 5 * 1024 * 1024 } });
-
-// Export the multer middleware so routes can apply it
 const uploadProductImage = upload.single("image");
 
 // ── Controllers ───────────────────────────────────────────────────────────────
 
 const listProducts = asyncHandler(async (req, res) => {
-  const { page = 1, limit = 10, search = "", category } = req.query;
+  const { page = 1, limit = 50, search = "", category } = req.query;
   const filter = { isActive: true };
   if (search) filter.$text = { $search: search };
   if (category) filter.category = category;
@@ -48,15 +48,44 @@ const listProducts = asyncHandler(async (req, res) => {
 });
 
 const createProduct = asyncHandler(async (req, res) => {
-  const productData = { ...req.body };
+  console.log("=== CREATE PRODUCT HIT ===");
+  console.log("req.body:", req.body);
+  console.log("req.file:", req.file);
 
-  // Attach image URL if a file was uploaded
-  if (req.file) {
-    productData.imageUrl = `/uploads/products/${req.file.filename}`;
+  const { name, category, price, costPrice, sku, description, gstRate } = req.body;
+
+  // Manual validation with clear error messages
+  if (!name || !name.trim()) {
+    res.status(400); throw new Error("Product name is required");
+  }
+  if (!category || !category.trim()) {
+    res.status(400); throw new Error("Category is required");
+  }
+  if (!sku || !sku.trim()) {
+    res.status(400); throw new Error("SKU is required");
+  }
+  if (!price || isNaN(Number(price)) || Number(price) < 0) {
+    res.status(400); throw new Error("Valid price is required");
+  }
+  if (!costPrice || isNaN(Number(costPrice)) || Number(costPrice) < 0) {
+    res.status(400); throw new Error("Valid cost price is required");
   }
 
+  const productData = {
+    name: name.trim(),
+    category: category.trim(),
+    sku: sku.trim().toUpperCase(),
+    price: Number(price),
+    costPrice: Number(costPrice),
+    description: description ? description.trim() : "",
+    gstRate: gstRate ? Number(gstRate) : 18,
+    imageUrl: req.file ? `/uploads/products/${req.file.filename}` : ""
+  };
+
   const product = await Product.create(productData);
+
   await Inventory.create({ product: product._id, quantity: 0, updatedBy: req.user._id });
+
   await logAudit({
     action: "product.create",
     entityType: "Product",
@@ -64,6 +93,8 @@ const createProduct = asyncHandler(async (req, res) => {
     metadata: { sku: product.sku },
     actor: req.user._id
   });
+
+  console.log("=== PRODUCT CREATED:", product.name, "===");
   res.status(201).json(product);
 });
 
@@ -72,24 +103,20 @@ const updateProduct = asyncHandler(async (req, res) => {
   if (req.file) {
     updateData.imageUrl = `/uploads/products/${req.file.filename}`;
   }
+  if (updateData.price) updateData.price = Number(updateData.price);
+  if (updateData.costPrice) updateData.costPrice = Number(updateData.costPrice);
 
   const product = await Product.findByIdAndUpdate(req.params.id, updateData, {
     new: true,
     runValidators: true
   });
-  if (!product) {
-    res.status(404);
-    throw new Error("Product not found");
-  }
+  if (!product) { res.status(404); throw new Error("Product not found"); }
   res.json(product);
 });
 
 const deleteProduct = asyncHandler(async (req, res) => {
   const product = await Product.findById(req.params.id);
-  if (!product) {
-    res.status(404);
-    throw new Error("Product not found");
-  }
+  if (!product) { res.status(404); throw new Error("Product not found"); }
   product.isActive = false;
   await product.save();
   res.json({ message: "Product archived" });
@@ -97,33 +124,16 @@ const deleteProduct = asyncHandler(async (req, res) => {
 
 const getProductQr = asyncHandler(async (req, res) => {
   const product = await Product.findById(req.params.id);
-  if (!product) {
-    res.status(404);
-    throw new Error("Product not found");
-  }
-  const payload = JSON.stringify({
-    id: product._id,
-    sku: product.sku,
-    name: product.name,
-    price: product.price
-  });
+  if (!product) { res.status(404); throw new Error("Product not found"); }
+  const payload = JSON.stringify({ id: product._id, sku: product.sku, name: product.name, price: product.price });
   const qrDataUrl = await QRCode.toDataURL(payload);
   res.json({ qrDataUrl });
 });
 
 const getProductBarcode = asyncHandler(async (req, res) => {
   const product = await Product.findById(req.params.id);
-  if (!product) {
-    res.status(404);
-    throw new Error("Product not found");
-  }
-  const png = await bwipjs.toBuffer({
-    bcid: "code128",
-    text: product.sku,
-    scale: 3,
-    height: 10,
-    includetext: true
-  });
+  if (!product) { res.status(404); throw new Error("Product not found"); }
+  const png = await bwipjs.toBuffer({ bcid: "code128", text: product.sku, scale: 3, height: 10, includetext: true });
   res.set("Content-Type", "image/png");
   res.send(png);
 });
@@ -135,5 +145,5 @@ module.exports = {
   deleteProduct,
   getProductQr,
   getProductBarcode,
-  uploadProductImage   // ← export multer middleware for use in routes
+  uploadProductImage
 };

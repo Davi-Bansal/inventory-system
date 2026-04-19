@@ -23,18 +23,15 @@ const listSales = asyncHandler(async (req, res) => {
 
 const createSaleTransaction = asyncHandler(async (req, res) => {
   const sale = await createSale({
-    customerId: req.body.customerId,
-    items: req.body.items,
+    customerId:     req.body.customerId,
+    items:          req.body.items,
     discountAmount: Number(req.body.discountAmount || 0),
-    paymentMethod: req.body.paymentMethod,
-    userId: req.user._id
+    paymentMethod:  req.body.paymentMethod,
+    userId:         req.user._id
   });
   await logAudit({
-    action: "sale.create",
-    entityType: "Sale",
-    entityId: sale._id,
-    metadata: { invoiceNo: sale.invoiceNo },
-    actor: req.user._id
+    action: "sale.create", entityType: "Sale", entityId: sale._id,
+    metadata: { invoiceNo: sale.invoiceNo }, actor: req.user._id
   });
   res.status(201).json(sale);
 });
@@ -42,139 +39,238 @@ const createSaleTransaction = asyncHandler(async (req, res) => {
 const finalizeSaleTransaction = asyncHandler(async (req, res) => {
   const sale = await finalizeSale({ saleId: req.params.id, userId: req.user._id });
   await logAudit({
-    action: "sale.finalize",
-    entityType: "Sale",
-    entityId: sale._id,
-    metadata: { invoiceNo: sale.invoiceNo },
-    actor: req.user._id
+    action: "sale.finalize", entityType: "Sale", entityId: sale._id,
+    metadata: { invoiceNo: sale.invoiceNo }, actor: req.user._id
   });
   res.json(sale);
 });
 
-// FIXED: was already in the controller but route was likely missing
 const cancelDraftSale = asyncHandler(async (req, res) => {
   const sale = await Sale.findById(req.params.id);
-  if (!sale) {
-    res.status(404);
-    throw new Error("Sale not found");
-  }
-  if (sale.status !== "draft") {
-    res.status(400);
-    throw new Error("Only draft sales can be cancelled");
-  }
+  if (!sale) { res.status(404); throw new Error("Sale not found"); }
+  if (sale.status !== "draft") { res.status(400); throw new Error("Only draft sales can be cancelled"); }
   sale.status = "cancelled";
   await sale.save();
   await logAudit({
-    action: "sale.cancel",
-    entityType: "Sale",
-    entityId: sale._id,
-    metadata: { invoiceNo: sale.invoiceNo },
-    actor: req.user._id
+    action: "sale.cancel", entityType: "Sale", entityId: sale._id,
+    metadata: { invoiceNo: sale.invoiceNo }, actor: req.user._id
   });
   res.json(sale);
 });
 
-// FIXED: supports both Bearer token (from middleware) and ?token= query param
-// so that <a href> PDF downloads work from the browser
+// ── Number to words ───────────────────────────────────────────────────────────
+function numberToWords(amount) {
+  const ones = ["","One","Two","Three","Four","Five","Six","Seven","Eight","Nine",
+    "Ten","Eleven","Twelve","Thirteen","Fourteen","Fifteen","Sixteen",
+    "Seventeen","Eighteen","Nineteen"];
+  const tens = ["","","Twenty","Thirty","Forty","Fifty","Sixty","Seventy","Eighty","Ninety"];
+  function cvt(n) {
+    let r = "";
+    if (n >= 100) { r += ones[Math.floor(n/100)] + " Hundred "; n %= 100; }
+    if (n >= 20)  { r += tens[Math.floor(n/10)]  + " "; n %= 10; }
+    if (n > 0)    { r += ones[n] + " "; }
+    return r;
+  }
+  const rupees = Math.floor(amount);
+  const paise  = Math.round((amount - rupees) * 100);
+  let words = "";
+  if (rupees === 0) words = "Zero";
+  else {
+    if (rupees >= 10000000) words += cvt(Math.floor(rupees/10000000)) + "Crore ";
+    if (rupees >= 100000)   words += cvt(Math.floor((rupees%10000000)/100000)) + "Lakh ";
+    if (rupees >= 1000)     words += cvt(Math.floor((rupees%100000)/1000)) + "Thousand ";
+    words += cvt(rupees % 1000);
+  }
+  let result = words.trim() + " Rupees";
+  if (paise > 0) result += " and " + cvt(paise).trim() + " Paise";
+  return result + " Only";
+}
+
+// ── PDF Invoice ───────────────────────────────────────────────────────────────
+// Page size: A5 = 419.53 × 595.28 pts  (exactly half of A4)
+// Print tip: open PDF → print → "2 pages per sheet" → get 2 bills on 1 A4
 const downloadInvoicePdf = asyncHandler(async (req, res) => {
-  // Allow token via query string for direct browser download links
   let userId = req.user?._id;
   if (!userId && req.query.token) {
     try {
       const decoded = jwt.verify(req.query.token, env.jwtSecret);
       userId = decoded.id;
     } catch {
-      res.status(401);
-      throw new Error("Invalid token");
+      res.status(401); throw new Error("Invalid token");
     }
   }
 
-  const sale = await Sale.findById(req.params.id).populate("customer", "name phone email address");
-  if (!sale) {
-    res.status(404);
-    throw new Error("Sale not found");
-  }
+  const sale = await Sale.findById(req.params.id)
+    .populate("customer", "name phone email address");
+  if (!sale) { res.status(404); throw new Error("Sale not found"); }
 
   res.setHeader("Content-Type", "application/pdf");
-  res.setHeader(
-    "Content-Disposition",
-    `attachment; filename=${sale.invoiceNo}.pdf`
-  );
+  res.setHeader("Content-Disposition", `attachment; filename=${sale.invoiceNo}.pdf`);
 
-  const doc = new PDFDocument({ margin: 50 });
+  // A5 = half of A4
+  const PW = 419.53;
+  const PH = 595.28;
+
+  const doc = new PDFDocument({ size: "A5", margin: 0 });
   doc.pipe(res);
 
-  // Header
-  doc.fontSize(20).font("Helvetica-Bold").text("RETAIL SHOP INVOICE", { align: "center" });
-  doc.moveDown(0.5);
-  doc.moveTo(50, doc.y).lineTo(550, doc.y).stroke();
-  doc.moveDown(0.5);
+  // Margins
+  const L  = 20;
+  const R  = PW - 20;
+  const CW = R - L;    // ≈ 379 pts
 
-  // Invoice meta
-  doc.fontSize(11).font("Helvetica");
-  doc.text(`Invoice No: ${sale.invoiceNo}`);
-  doc.text(`Date: ${new Date(sale.createdAt).toLocaleDateString("en-IN")}`);
-  doc.text(`Payment Method: ${sale.paymentMethod}`);
-  doc.text(`Status: ${sale.status}`);
+  // Column widths — tight to fit A5 width
+  const SNO_W  = 20;
+  const QTY_W  = 28;
+  const RATE_W = 48;
+  const AMT_W  = 50;
+  const snoX   = L;
+  const itemX  = L + SNO_W;
+  const qtyX   = R - RATE_W - AMT_W - QTY_W;
+  const rateX  = R - RATE_W - AMT_W;
+  const amtX   = R - AMT_W;
+  const itemW  = qtyX - itemX - 2;
 
-  if (sale.customer) {
-    doc.moveDown(0.5);
-    doc.font("Helvetica-Bold").text("Customer:");
-    doc.font("Helvetica");
-    doc.text(`  Name: ${sale.customer.name}`);
-    if (sale.customer.phone) doc.text(`  Phone: ${sale.customer.phone}`);
-    if (sale.customer.email) doc.text(`  Email: ${sale.customer.email}`);
+  // Centred text helper
+  const cText = (text, x, w, y) =>
+    doc.text(String(text), x, y, { width: w, align: "center", lineBreak: false });
+
+  let y = 10;
+
+  // ── TOP BORDER ─────────────────────────────────────────────
+  doc.moveTo(L, y).lineTo(R, y).lineWidth(1.5).strokeColor("#000").stroke();
+  y += 5;
+
+  // ── SHOP NAME ──────────────────────────────────────────────
+  doc.fontSize(13).font("Helvetica-Bold").fillColor("#000")
+     .text("SHRIYANSH DIGITAL POINT", L, y, { align: "center", width: CW, lineBreak: false });
+  y += 16;
+
+  doc.fontSize(7).font("Helvetica").fillColor("#444")
+     .text("Ph: 9956692347 / 9616324058", L, y, { align: "center", width: CW, lineBreak: false });
+  y += 10;
+
+  doc.fontSize(6.5).fillColor("#666")
+     .text("Kailhat Bazar, Near Indian Bank, Chunar, Mirzapur", L, y, { align: "center", width: CW, lineBreak: false });
+  y += 10;
+
+  doc.fontSize(9).font("Helvetica-Bold").fillColor("#000")
+     .text("INVOICE BILL", L, y, { align: "center", width: CW, lineBreak: false });
+  y += 12;
+
+  doc.moveTo(L, y).lineTo(R, y).lineWidth(0.7).strokeColor("#000").stroke();
+  y += 5;
+
+  // ── BILL META ──────────────────────────────────────────────
+  const mY = y;
+  doc.fontSize(7.5).font("Helvetica").fillColor("#000");
+  doc.text(`Bill No : ${sale.invoiceNo}`,                             L, mY,      { lineBreak: false });
+  doc.text(`To      : ${sale.customer?.name || "Walk-in Customer"}`,  L, mY + 10, { lineBreak: false });
+  if (sale.customer?.phone)
+    doc.text(`Phone   : ${sale.customer.phone}`,                      L, mY + 20, { lineBreak: false });
+
+  doc.text(`Date    : ${new Date(sale.createdAt).toLocaleDateString("en-IN")}`,
+    L, mY, { align: "right", width: CW, lineBreak: false });
+  doc.text(`Payment : ${sale.paymentMethod}`,
+    L, mY + 10, { align: "right", width: CW, lineBreak: false });
+
+  y = mY + (sale.customer?.phone ? 32 : 22);
+
+  // ── TABLE HEADER ────────────────────────────────────────────
+  const TH_H = 15;
+  doc.rect(L, y, CW, TH_H).fill("#222");
+  doc.fillColor("#fff").font("Helvetica-Bold").fontSize(7);
+  cText("S.No",   snoX,  SNO_W,  y + 4);
+  cText("ITEMS",  itemX, itemW,  y + 4);
+  cText("Qty",    qtyX,  QTY_W,  y + 4);
+  cText("Rate",   rateX, RATE_W, y + 4);
+  cText("Amount", amtX,  AMT_W,  y + 4);
+  y += TH_H;
+
+  // ── TABLE ROWS ──────────────────────────────────────────────
+  const ROW_H    = 14;
+  const MIN_ROWS = 6;
+  const dataRows = Math.max(sale.items.length, MIN_ROWS);
+
+  // Alternating row shading
+  for (let i = 0; i < dataRows; i++) {
+    if (i % 2 === 0)
+      doc.rect(L, y + i * ROW_H, CW, ROW_H).fill("#f7f7f7");
   }
 
-  doc.moveDown(0.5);
-  doc.moveTo(50, doc.y).lineTo(550, doc.y).stroke();
-  doc.moveDown(0.5);
+  const discount     = parseFloat(Number(sale.discountAmount || 0).toFixed(2));
+  const SUMMARY_ROWS = discount > 0 ? 3 : 2;
+  const totalH       = TH_H + dataRows * ROW_H + SUMMARY_ROWS * ROW_H + 4;
 
-  // Items table header
-  doc.font("Helvetica-Bold");
-  doc.text("Item", 50, doc.y, { width: 200, continued: false });
-  const headerY = doc.y - 15;
-  doc.text("SKU", 255, headerY, { width: 100 });
-  doc.text("Qty", 355, headerY, { width: 60 });
-  doc.text("Rate", 415, headerY, { width: 80 });
-  doc.text("Total", 495, headerY, { width: 80 });
+  // Vertical dividers (full table height)
+  [snoX + SNO_W, qtyX - 1, rateX - 1, amtX - 1].forEach((x) => {
+    doc.moveTo(x, y - TH_H)
+       .lineTo(x, y - TH_H + totalH)
+       .lineWidth(0.3).strokeColor("#bbb").stroke();
+  });
+  // Outer border
+  doc.rect(L, y - TH_H, CW, totalH).lineWidth(0.6).strokeColor("#000").stroke();
 
-  doc.moveDown(0.3);
-  doc.moveTo(50, doc.y).lineTo(550, doc.y).stroke();
-  doc.moveDown(0.3);
+  // Data
+  let subtotalAmt = 0;
+  doc.font("Helvetica").fontSize(7.5).fillColor("#000");
 
-  // Items
-  doc.font("Helvetica");
-  sale.items.forEach((item) => {
-    const y = doc.y;
-    doc.text(item.name, 50, y, { width: 200 });
-    doc.text(item.sku || "-", 255, y, { width: 100 });
-    doc.text(String(item.quantity), 355, y, { width: 60 });
-    doc.text(`₹${Number(item.unitPrice).toFixed(2)}`, 415, y, { width: 80 });
-    doc.text(`₹${Number(item.lineTotal).toFixed(2)}`, 495, y, { width: 80 });
-    doc.moveDown(0.3);
+  sale.items.forEach((item, i) => {
+    const lineAmt = parseFloat((Number(item.unitPrice) * Number(item.quantity)).toFixed(2));
+    subtotalAmt  += lineAmt;
+    const ry      = y + i * ROW_H + 3;
+
+    cText(String(i + 1),                              snoX,  SNO_W,  ry);
+    doc.text(item.name, itemX + 2, ry, { width: itemW - 4, lineBreak: false });
+    cText(String(item.quantity),                      qtyX,  QTY_W,  ry);
+    cText(`Rs.${Number(item.unitPrice).toFixed(2)}`,  rateX, RATE_W, ry);
+    cText(`Rs.${lineAmt.toFixed(2)}`,                 amtX,  AMT_W,  ry);
   });
 
-  doc.moveDown(0.5);
-  doc.moveTo(50, doc.y).lineTo(550, doc.y).stroke();
-  doc.moveDown(0.5);
+  y += dataRows * ROW_H;
 
-  // Totals
-  const totalsX = 380;
-  doc.text("Subtotal:", totalsX, doc.y, { continued: false });
-  doc.text(`₹${Number(sale.subtotal).toFixed(2)}`, 480, doc.y - 15);
-  doc.text("GST:", totalsX);
-  doc.text(`₹${Number(sale.totalTax).toFixed(2)}`, 480, doc.y - 15);
-  doc.text("Discount:", totalsX);
-  doc.text(`₹${Number(sale.discountAmount).toFixed(2)}`, 480, doc.y - 15);
+  // ── SUMMARY ────────────────────────────────────────────────
+  const grandTotal = parseFloat((subtotalAmt - discount).toFixed(2));
 
-  doc.moveDown(0.3);
-  doc.font("Helvetica-Bold").fontSize(13);
-  doc.text("Final Amount:", totalsX, doc.y, { continued: false });
-  doc.text(`₹${Number(sale.finalAmount).toFixed(2)}`, 480, doc.y - 16);
+  doc.moveTo(L, y).lineTo(R, y).lineWidth(0.4).strokeColor("#999").stroke();
 
-  doc.moveDown(2);
-  doc.fontSize(9).font("Helvetica").fillColor("gray").text("Thank you for your business!", { align: "center" });
+  const sumRow = (label, value, sy) => {
+    doc.font("Helvetica").fontSize(7).fillColor("#000");
+    doc.text(label, rateX, sy, { width: RATE_W, align: "right", lineBreak: false });
+    cText(`Rs.${value.toFixed(2)}`, amtX, AMT_W, sy);
+  };
+
+  let sy = y + 3;
+  sumRow("Subtotal :", subtotalAmt, sy); sy += ROW_H;
+  if (discount > 0) { sumRow("Discount :", discount, sy); sy += ROW_H; }
+
+  // Grand total dark bar
+  const GT_Y = sy + 1;
+  const GT_H = 17;
+  doc.rect(L, GT_Y, CW, GT_H).fill("#222");
+  doc.fillColor("#fff").font("Helvetica-Bold").fontSize(8.5);
+  doc.text("TOTAL AMOUNT :", L + 5, GT_Y + 4, { lineBreak: false });
+  doc.text(`Rs.${grandTotal.toFixed(2)}`, L, GT_Y + 4,
+    { align: "right", width: CW - 5, lineBreak: false });
+
+  // Amount in words
+  const WY = GT_Y + GT_H + 3;
+  const WH = 15;
+  doc.rect(L, WY, CW, WH).fillAndStroke("#f0f0f0", "#aaa");
+  doc.fillColor("#000").font("Helvetica-Bold").fontSize(6.5)
+     .text(`Rupees : ${numberToWords(grandTotal)}`, L + 4, WY + 4,
+       { width: CW - 8, lineBreak: false });
+
+  // ── FOOTER ─────────────────────────────────────────────────
+  const FY = WY + WH + 8;
+  doc.fontSize(6.5).font("Helvetica").fillColor("#555")
+     .text("T&C : Once items sold cannot be exchanged or refunded.",
+       L, FY, { width: CW * 0.58, lineBreak: false });
+  doc.fontSize(7).fillColor("#000")
+     .text("Signature : _______________", R - 115, FY + 5, { lineBreak: false });
+
+  // Bottom border
+  doc.moveTo(L, PH - 8).lineTo(R, PH - 8).lineWidth(1.5).strokeColor("#000").stroke();
 
   doc.end();
 });

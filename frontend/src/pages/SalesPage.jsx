@@ -2,20 +2,62 @@ import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import DataTable from "../components/common/DataTable";
 import { fetchCustomers } from "../services/customerService";
-import { createSale, fetchSales, finalizeSale, cancelSale, downloadInvoiceUrl } from "../services/salesService";
+import { fetchProducts } from "../services/productService";
+import {
+  createSale,
+  fetchSales,
+  finalizeSale,
+  cancelSale,
+  downloadInvoiceUrl
+} from "../services/salesService";
 import { currency } from "../utils/format";
 
-const SalesPage = () => {
-  const [sales, setSales] = useState([]);
-  const [customers, setCustomers] = useState([]);
-  const [form, setForm] = useState({
-    customerId: "",
-    productId: "",
-    quantity: "",
-    paymentMethod: "Cash",
-    discountAmount: "0"
-  });
+const EMPTY_ITEM = { productId: "", quantity: "" };
 
+const SalesPage = () => {
+  const [sales, setSales]         = useState([]);
+  const [customers, setCustomers] = useState([]);
+  const [products, setProducts]   = useState([]);
+
+  const [customerId,    setCustomerId]    = useState("");
+  const [paymentMethod, setPaymentMethod] = useState("Cash");
+  const [discountType,  setDiscountType]  = useState("percent");
+  const [discountValue, setDiscountValue] = useState("0");
+  const [items, setItems] = useState([{ ...EMPTY_ITEM }]);
+
+  // ── helpers ──────────────────────────────────────────────
+  const getProduct    = (id) => products.find((p) => p._id === id) || null;
+  const addItemRow    = () => setItems((prev) => [...prev, { ...EMPTY_ITEM }]);
+  const removeItemRow = (idx) =>
+    setItems((prev) => prev.length === 1 ? prev : prev.filter((_, i) => i !== idx));
+  const updateItem    = (idx, field, value) =>
+    setItems((prev) => prev.map((it, i) => i === idx ? { ...it, [field]: value } : it));
+
+  const handleDiscountTypeChange = (e) => {
+    setDiscountType(e.target.value);
+    setDiscountValue("0");
+  };
+
+  // ── live bill calculation (NO GST) ───────────────────────
+  const lineSubtotals = items.map((it) => {
+    const p = getProduct(it.productId);
+    return p ? Number(p.price) * (Number(it.quantity) || 0) : 0;
+  });
+  const subtotal  = lineSubtotals.reduce((a, b) => a + b, 0);
+  const discVal   = Math.max(Number(discountValue) || 0, 0);
+
+  let discAmount = 0;
+  if (discountType === "percent") {
+    discAmount = parseFloat(((subtotal * Math.min(discVal, 100)) / 100).toFixed(2));
+  } else {
+    discAmount = parseFloat(Math.min(discVal, subtotal).toFixed(2));
+  }
+
+  // Bill total = subtotal − discount (no GST)
+  const billTotal     = parseFloat((subtotal - discAmount).toFixed(2));
+  const hasValidItems = items.some((it) => it.productId && Number(it.quantity) >= 1);
+
+  // ── data loading ─────────────────────────────────────────
   const loadSales = async () => {
     const data = await fetchSales();
     setSales(data.data || []);
@@ -24,41 +66,123 @@ const SalesPage = () => {
   useEffect(() => {
     loadSales();
     fetchCustomers().then((d) => setCustomers(d.data || []));
+    fetchProducts().then((d)  => setProducts(d.data  || []));
   }, []);
 
-  const onCreate = async (event) => {
-    event.preventDefault();
-    await createSale({
-      customerId: form.customerId || undefined,
-      items: [{ productId: form.productId, quantity: Number(form.quantity) }],
-      paymentMethod: form.paymentMethod,
-      discountAmount: Number(form.discountAmount)
-    });
-    toast.success("Sale draft created");
-    setForm({ customerId: "", productId: "", quantity: "", paymentMethod: "Cash", discountAmount: "0" });
-    await loadSales();
+  // ── submit ───────────────────────────────────────────────
+  const onCreate = async (e) => {
+    e.preventDefault();
+    const validItems = items.filter((it) => it.productId && Number(it.quantity) >= 1);
+    if (!validItems.length) {
+      toast.error("Add at least one item with product and quantity");
+      return;
+    }
+    try {
+      await createSale({
+        customerId:     customerId || undefined,
+        items:          validItems.map((it) => ({ productId: it.productId, quantity: Number(it.quantity) })),
+        paymentMethod,
+        discountAmount: discAmount
+      });
+      toast.success("Sale draft created");
+      setCustomerId(""); setPaymentMethod("Cash");
+      setDiscountType("percent"); setDiscountValue("0");
+      setItems([{ ...EMPTY_ITEM }]);
+      await loadSales();
+    } catch (err) {
+      toast.error(err?.response?.data?.message || "Failed to create sale");
+    }
   };
 
   const onFinalize = async (saleId) => {
-    await finalizeSale(saleId);
-    toast.success("Sale finalized and stock updated");
-    await loadSales();
+    try {
+      await finalizeSale(saleId);
+      toast.success("Sale finalized and stock updated");
+      await loadSales();
+    } catch (err) {
+      toast.error(err?.response?.data?.message || "Failed to finalize");
+    }
   };
 
   const onCancel = async (saleId) => {
     if (!window.confirm("Cancel this draft sale?")) return;
-    await cancelSale(saleId);
-    toast.success("Sale cancelled");
-    await loadSales();
+    try {
+      await cancelSale(saleId);
+      toast.success("Sale cancelled");
+      await loadSales();
+    } catch (err) {
+      toast.error(err?.response?.data?.message || "Failed to cancel");
+    }
   };
 
+  // Sale row total = subtotal - discount (no GST)
+  const getSaleSubtotal = (row) =>
+    (row.items || []).reduce((acc, it) => acc + Number(it.unitPrice) * Number(it.quantity), 0);
+
+  const getSaleBillTotal = (row) => {
+    const sub  = getSaleSubtotal(row);
+    const disc = Number(row.discountAmount || 0);
+    return parseFloat((sub - disc).toFixed(2));
+  };
+
+  // ── table columns ─────────────────────────────────────────
   const columns = [
-    { key: "invoiceNo", label: "Invoice" },
-    { key: "customer", label: "Customer", render: (row) => row.customer?.name || "Walk-in" },
+    { key: "invoiceNo",     label: "Invoice" },
+    { key: "customer",      label: "Customer",  render: (row) => row.customer?.name || "Walk-in" },
     { key: "paymentMethod", label: "Payment" },
-    { key: "status", label: "Status" },
-    { key: "discountAmount", label: "Discount", render: (row) => currency(row.discountAmount) },
-    { key: "finalAmount", label: "Total", render: (row) => currency(row.finalAmount) },
+    {
+      key: "status",
+      label: "Status",
+      render: (row) => (
+        <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
+          row.status === "finalized" ? "bg-green-100 text-green-700"  :
+          row.status === "cancelled" ? "bg-red-100 text-red-600"      :
+                                       "bg-yellow-100 text-yellow-700"
+        }`}>
+          {row.status}
+        </span>
+      )
+    },
+    {
+      key: "items",
+      label: "Items",
+      render: (row) => {
+        const list = row.items || [];
+        if (!list.length) return "—";
+        return (
+          <div className="space-y-0.5">
+            {list.map((it, i) => (
+              <div key={i} className="text-xs text-slate-600">
+                {it.name} × {it.quantity}
+              </div>
+            ))}
+          </div>
+        );
+      }
+    },
+    {
+      key: "subtotal",
+      label: "Subtotal",
+      render: (row) => currency(getSaleSubtotal(row))
+    },
+    {
+      key: "discountAmount",
+      label: "Discount",
+      render: (row) => (
+        <span className="text-red-500">
+          {row.discountAmount > 0 ? `− ${currency(row.discountAmount)}` : "—"}
+        </span>
+      )
+    },
+    {
+      key: "billTotal",
+      label: "Bill Total",
+      render: (row) => (
+        <span className="font-semibold text-teal-700">
+          {currency(getSaleBillTotal(row))}
+        </span>
+      )
+    },
     {
       key: "actions",
       label: "Actions",
@@ -97,55 +221,172 @@ const SalesPage = () => {
 
   return (
     <div className="space-y-4">
-      <form
-        onSubmit={onCreate}
-        className="grid gap-3 rounded-xl border border-brand-100 bg-white p-4 md:grid-cols-3"
-      >
-        {/* Customer selector */}
-        <select
-          value={form.customerId}
-          onChange={(e) => setForm((p) => ({ ...p, customerId: e.target.value }))}
-          className="rounded-lg border border-brand-100 px-3 py-2 text-sm"
-        >
-          <option value="">Walk-in customer</option>
-          {customers.map((c) => (
-            <option key={c._id} value={c._id}>
-              {c.name} {c.phone ? `(${c.phone})` : ""}
-            </option>
-          ))}
-        </select>
+      <form onSubmit={onCreate} className="rounded-xl border border-brand-100 bg-white p-4 space-y-4">
 
-        <input
-          placeholder="Product ID"
-          value={form.productId}
-          onChange={(e) => setForm((p) => ({ ...p, productId: e.target.value }))}
-          className="rounded-lg border border-brand-100 px-3 py-2 text-sm"
-          required
-        />
-        <input
-          placeholder="Quantity"
-          value={form.quantity}
-          onChange={(e) => setForm((p) => ({ ...p, quantity: e.target.value }))}
-          className="rounded-lg border border-brand-100 px-3 py-2 text-sm"
-          required
-        />
-        <select
-          value={form.paymentMethod}
-          onChange={(e) => setForm((p) => ({ ...p, paymentMethod: e.target.value }))}
-          className="rounded-lg border border-brand-100 px-3 py-2 text-sm"
+        {/* ── Row 1: Customer / Payment / Discount ── */}
+        <div className="grid gap-3 md:grid-cols-4">
+          <select
+            value={customerId}
+            onChange={(e) => setCustomerId(e.target.value)}
+            className="rounded-lg border border-brand-100 px-3 py-2 text-sm"
+          >
+            <option value="">Walk-in customer</option>
+            {customers.map((c) => (
+              <option key={c._id} value={c._id}>
+                {c.name} {c.phone ? `(${c.phone})` : ""}
+              </option>
+            ))}
+          </select>
+
+          <select
+            value={paymentMethod}
+            onChange={(e) => setPaymentMethod(e.target.value)}
+            className="rounded-lg border border-brand-100 px-3 py-2 text-sm"
+          >
+            <option>Cash</option>
+            <option>UPI</option>
+            <option>Card</option>
+            <option>Credit</option>
+          </select>
+
+          <select
+            value={discountType}
+            onChange={handleDiscountTypeChange}
+            className="rounded-lg border border-brand-100 px-3 py-2 text-sm"
+          >
+            <option value="percent">Discount in % (percentage)</option>
+            <option value="rupees">Discount in ₹ (rupees)</option>
+          </select>
+
+          <div className="relative">
+            <input
+              placeholder={discountType === "percent" ? "e.g. 10 for 10% off" : "e.g. 5 for ₹5 off"}
+              type="number" min="0"
+              max={discountType === "percent" ? "100" : undefined}
+              step="0.01"
+              value={discountValue}
+              onChange={(e) => setDiscountValue(e.target.value)}
+              className="w-full rounded-lg border border-brand-100 px-3 py-2 pr-8 text-sm"
+            />
+            <span className="absolute right-3 top-2.5 text-sm font-semibold text-slate-400 pointer-events-none select-none">
+              {discountType === "percent" ? "%" : "₹"}
+            </span>
+          </div>
+        </div>
+
+        {/* ── Items list ── */}
+        <div className="rounded-lg border border-brand-100 overflow-hidden">
+          <div className="grid grid-cols-[2fr_1fr_auto] gap-2 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-500 uppercase tracking-wide">
+            <span>Product</span>
+            <span>Quantity</span>
+            <span className="w-8" />
+          </div>
+
+          <div className="divide-y divide-brand-50">
+            {items.map((it, idx) => {
+              const prod    = getProduct(it.productId);
+              const qty     = Number(it.quantity) || 0;
+              const lineAmt = prod ? Number(prod.price) * qty : 0;
+
+              return (
+                <div key={idx} className="grid grid-cols-[2fr_1fr_auto] gap-2 items-center px-3 py-2">
+                  <div>
+                    <select
+                      value={it.productId}
+                      onChange={(e) => updateItem(idx, "productId", e.target.value)}
+                      className="w-full rounded-lg border border-brand-100 px-2 py-1.5 text-sm"
+                    >
+                      <option value="">Select product</option>
+                      {products.map((p) => (
+                        <option key={p._id} value={p._id}>
+                          {p.name} — {currency(p.price)} ({p.sku})
+                        </option>
+                      ))}
+                    </select>
+                    {prod && qty > 0 && (
+                      <p className="mt-0.5 text-xs text-slate-400">
+                        {currency(prod.price)} × {qty} = <span className="font-medium text-slate-600">{currency(lineAmt)}</span>
+                      </p>
+                    )}
+                  </div>
+
+                  <input
+                    type="number" min="1" placeholder="Qty"
+                    value={it.quantity}
+                    onChange={(e) => updateItem(idx, "quantity", e.target.value)}
+                    className="rounded-lg border border-brand-100 px-2 py-1.5 text-sm w-full"
+                  />
+
+                  <button
+                    type="button"
+                    onClick={() => removeItemRow(idx)}
+                    disabled={items.length === 1}
+                    className="flex h-8 w-8 items-center justify-center rounded-lg text-red-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-20 disabled:cursor-not-allowed"
+                    title="Remove item"
+                  >
+                    ✕
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="border-t border-brand-50 px-3 py-2">
+            <button
+              type="button"
+              onClick={addItemRow}
+              className="flex items-center gap-1.5 text-sm font-medium text-teal-600 hover:text-teal-700"
+            >
+              <span className="text-lg leading-none">＋</span> Add another item
+            </button>
+          </div>
+        </div>
+
+        {/* ── Live bill preview (no GST) ── */}
+        {hasValidItems && (
+          <div className="rounded-lg bg-slate-50 border border-slate-200 px-4 py-3 space-y-1 text-sm">
+            <p className="font-semibold text-slate-500 text-xs uppercase tracking-wide mb-2">Bill Preview</p>
+
+            {items.map((it, idx) => {
+              const prod = getProduct(it.productId);
+              const qty  = Number(it.quantity) || 0;
+              if (!prod || qty < 1) return null;
+              return (
+                <div key={idx} className="flex justify-between text-slate-600">
+                  <span>{prod.name} × {qty}</span>
+                  <span>{currency(Number(prod.price) * qty)}</span>
+                </div>
+              );
+            })}
+
+            <div className="border-t border-slate-200 pt-2 mt-1 space-y-1 text-slate-600">
+              <div className="flex justify-between">
+                <span>Subtotal</span>
+                <span>{currency(subtotal)}</span>
+              </div>
+              {discAmount > 0 && (
+                <div className="flex justify-between text-red-500">
+                  <span>
+                    Discount {discountType === "percent"
+                      ? `(${Math.min(discVal, 100)}%)`
+                      : `(₹${discVal})`}
+                  </span>
+                  <span>− {currency(discAmount)}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="border-t border-slate-300 pt-2 flex justify-between items-center">
+              <span className="font-semibold text-slate-700">Bill Total</span>
+              <span className="text-xl font-bold text-teal-700">{currency(billTotal)}</span>
+            </div>
+          </div>
+        )}
+
+        <button
+          type="submit"
+          className="w-full rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700"
         >
-          <option>Cash</option>
-          <option>UPI</option>
-          <option>Card</option>
-          <option>Credit</option>
-        </select>
-        <input
-          placeholder="Discount amount (₹)"
-          value={form.discountAmount}
-          onChange={(e) => setForm((p) => ({ ...p, discountAmount: e.target.value }))}
-          className="rounded-lg border border-brand-100 px-3 py-2 text-sm"
-        />
-        <button className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white md:col-span-3">
           Create sale
         </button>
       </form>
