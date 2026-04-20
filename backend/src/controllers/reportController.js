@@ -147,7 +147,7 @@ const exportSalesCsv = asyncHandler(async (req, res) => {
   res.send(csv);
 });
 
-// ── PDF helpers ───────────────────────────────────────────────────────────────
+// ── 
 const TEAL  = "#0d9488";
 const BLACK = "#0f172a";
 const GRAY  = "#64748b";

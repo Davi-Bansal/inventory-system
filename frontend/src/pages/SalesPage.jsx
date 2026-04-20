@@ -20,12 +20,12 @@ const SalesPage = () => {
   const [products, setProducts]   = useState([]);
 
   const [customerId,    setCustomerId]    = useState("");
+  const [walkInName,    setWalkInName]    = useState("");
   const [paymentMethod, setPaymentMethod] = useState("Cash");
   const [discountType,  setDiscountType]  = useState("percent");
   const [discountValue, setDiscountValue] = useState("0");
   const [items, setItems] = useState([{ ...EMPTY_ITEM }]);
 
-  // ── helpers ──────────────────────────────────────────────
   const getProduct    = (id) => products.find((p) => p._id === id) || null;
   const addItemRow    = () => setItems((prev) => [...prev, { ...EMPTY_ITEM }]);
   const removeItemRow = (idx) =>
@@ -38,26 +38,27 @@ const SalesPage = () => {
     setDiscountValue("0");
   };
 
-  // ── live bill calculation (NO GST) ───────────────────────
+  const handleCustomerChange = (e) => {
+    setCustomerId(e.target.value);
+    if (e.target.value) setWalkInName("");
+  };
+
+  // Live bill calculation
   const lineSubtotals = items.map((it) => {
     const p = getProduct(it.productId);
     return p ? Number(p.price) * (Number(it.quantity) || 0) : 0;
   });
   const subtotal  = lineSubtotals.reduce((a, b) => a + b, 0);
   const discVal   = Math.max(Number(discountValue) || 0, 0);
-
-  let discAmount = 0;
+  let discAmount  = 0;
   if (discountType === "percent") {
     discAmount = parseFloat(((subtotal * Math.min(discVal, 100)) / 100).toFixed(2));
   } else {
     discAmount = parseFloat(Math.min(discVal, subtotal).toFixed(2));
   }
-
-  // Bill total = subtotal − discount (no GST)
   const billTotal     = parseFloat((subtotal - discAmount).toFixed(2));
   const hasValidItems = items.some((it) => it.productId && Number(it.quantity) >= 1);
 
-  // ── data loading ─────────────────────────────────────────
   const loadSales = async () => {
     const data = await fetchSales();
     setSales(data.data || []);
@@ -69,7 +70,6 @@ const SalesPage = () => {
     fetchProducts().then((d)  => setProducts(d.data  || []));
   }, []);
 
-  // ── submit ───────────────────────────────────────────────
   const onCreate = async (e) => {
     e.preventDefault();
     const validItems = items.filter((it) => it.productId && Number(it.quantity) >= 1);
@@ -80,12 +80,14 @@ const SalesPage = () => {
     try {
       await createSale({
         customerId:     customerId || undefined,
+        walkInName:     walkInName.trim(),
         items:          validItems.map((it) => ({ productId: it.productId, quantity: Number(it.quantity) })),
         paymentMethod,
         discountAmount: discAmount
       });
       toast.success("Sale draft created");
-      setCustomerId(""); setPaymentMethod("Cash");
+      setCustomerId(""); setWalkInName("");
+      setPaymentMethod("Cash");
       setDiscountType("percent"); setDiscountValue("0");
       setItems([{ ...EMPTY_ITEM }]);
       await loadSales();
@@ -115,8 +117,10 @@ const SalesPage = () => {
     }
   };
 
-  // Sale row total = subtotal - discount (no GST)
-  const getSaleSubtotal = (row) =>
+  const resolveCustomerName = (row) =>
+    row.customer?.name || row.walkInName || "Walk-in";
+
+  const getSaleSubtotal  = (row) =>
     (row.items || []).reduce((acc, it) => acc + Number(it.unitPrice) * Number(it.quantity), 0);
 
   const getSaleBillTotal = (row) => {
@@ -125,10 +129,9 @@ const SalesPage = () => {
     return parseFloat((sub - disc).toFixed(2));
   };
 
-  // ── table columns ─────────────────────────────────────────
   const columns = [
-    { key: "invoiceNo",     label: "Invoice" },
-    { key: "customer",      label: "Customer",  render: (row) => row.customer?.name || "Walk-in" },
+    { key: "invoiceNo", label: "Invoice" },
+    { key: "customer",  label: "Customer", render: (row) => resolveCustomerName(row) },
     { key: "paymentMethod", label: "Payment" },
     {
       key: "status",
@@ -152,19 +155,13 @@ const SalesPage = () => {
         return (
           <div className="space-y-0.5">
             {list.map((it, i) => (
-              <div key={i} className="text-xs text-slate-600">
-                {it.name} × {it.quantity}
-              </div>
+              <div key={i} className="text-xs text-slate-600">{it.name} × {it.quantity}</div>
             ))}
           </div>
         );
       }
     },
-    {
-      key: "subtotal",
-      label: "Subtotal",
-      render: (row) => currency(getSaleSubtotal(row))
-    },
+    { key: "subtotal", label: "Subtotal", render: (row) => currency(getSaleSubtotal(row)) },
     {
       key: "discountAmount",
       label: "Discount",
@@ -178,9 +175,7 @@ const SalesPage = () => {
       key: "billTotal",
       label: "Bill Total",
       render: (row) => (
-        <span className="font-semibold text-teal-700">
-          {currency(getSaleBillTotal(row))}
-        </span>
+        <span className="font-semibold text-teal-700">{currency(getSaleBillTotal(row))}</span>
       )
     },
     {
@@ -190,27 +185,19 @@ const SalesPage = () => {
         <div className="flex gap-2">
           {row.status === "draft" && (
             <>
-              <button
-                onClick={() => onFinalize(row._id)}
-                className="rounded bg-teal-600 px-2 py-1 text-xs font-medium text-white hover:bg-teal-700"
-              >
+              <button onClick={() => onFinalize(row._id)}
+                className="rounded bg-teal-600 px-2 py-1 text-xs font-medium text-white hover:bg-teal-700">
                 Finalize
               </button>
-              <button
-                onClick={() => onCancel(row._id)}
-                className="rounded bg-red-500 px-2 py-1 text-xs font-medium text-white hover:bg-red-600"
-              >
+              <button onClick={() => onCancel(row._id)}
+                className="rounded bg-red-500 px-2 py-1 text-xs font-medium text-white hover:bg-red-600">
                 Cancel
               </button>
             </>
           )}
           {row.status === "finalized" && (
-            <a
-              href={downloadInvoiceUrl(row._id)}
-              target="_blank"
-              rel="noreferrer"
-              className="rounded bg-slate-700 px-2 py-1 text-xs font-medium text-white hover:bg-slate-800"
-            >
+            <a href={downloadInvoiceUrl(row._id)} target="_blank" rel="noreferrer"
+              className="rounded bg-slate-700 px-2 py-1 text-xs font-medium text-white hover:bg-slate-800">
               PDF
             </a>
           )}
@@ -221,13 +208,13 @@ const SalesPage = () => {
 
   return (
     <div className="space-y-4">
-      <form onSubmit={onCreate} className="rounded-xl border border-brand-100 bg-white p-4 space-y-4">
+      <form onSubmit={onCreate} className="rounded-xl border border-brand-100 bg-white p-4 space-y-3">
 
-        {/* ── Row 1: Customer / Payment / Discount ── */}
-        <div className="grid gap-3 md:grid-cols-4">
+        {/* ── Row 1: Customer + Walk-in name ── */}
+        <div className="grid gap-3 md:grid-cols-2">
           <select
             value={customerId}
-            onChange={(e) => setCustomerId(e.target.value)}
+            onChange={handleCustomerChange}
             className="rounded-lg border border-brand-100 px-3 py-2 text-sm"
           >
             <option value="">Walk-in customer</option>
@@ -238,6 +225,19 @@ const SalesPage = () => {
             ))}
           </select>
 
+          <input
+            type="text"
+            placeholder={customerId ? "Saved customer selected" : "Customer name (optional)"}
+            value={walkInName}
+            onChange={(e) => setWalkInName(e.target.value)}
+            disabled={!!customerId}
+            className="rounded-lg border border-brand-100 px-3 py-2 text-sm disabled:bg-slate-50 disabled:text-slate-400"
+          />
+        </div>
+
+        {/* ── Row 2: Payment + Discount type + Discount value — all 3 in one row ── */}
+        <div className="grid gap-3 md:grid-cols-3">
+          {/* Payment */}
           <select
             value={paymentMethod}
             onChange={(e) => setPaymentMethod(e.target.value)}
@@ -249,24 +249,27 @@ const SalesPage = () => {
             <option>Credit</option>
           </select>
 
+          {/* Discount TYPE — takes up 1 column */}
           <select
             value={discountType}
             onChange={handleDiscountTypeChange}
             className="rounded-lg border border-brand-100 px-3 py-2 text-sm"
           >
-            <option value="percent">Discount in % (percentage)</option>
-            <option value="rupees">Discount in ₹ (rupees)</option>
+            <option value="percent">Discount %</option>
+            <option value="rupees">Discount ₹</option>
           </select>
 
+          {/* Discount VALUE — same row, right next to type */}
           <div className="relative">
             <input
-              placeholder={discountType === "percent" ? "e.g. 10 for 10% off" : "e.g. 5 for ₹5 off"}
-              type="number" min="0"
+              placeholder={discountType === "percent" ? "e.g. 10" : "e.g. 5"}
+              type="number"
+              min="0"
               max={discountType === "percent" ? "100" : undefined}
               step="0.01"
               value={discountValue}
               onChange={(e) => setDiscountValue(e.target.value)}
-              className="w-full rounded-lg border border-brand-100 px-3 py-2 pr-8 text-sm"
+              className="w-full rounded-lg border border-brand-100 px-3 py-2 pr-9 text-sm"
             />
             <span className="absolute right-3 top-2.5 text-sm font-semibold text-slate-400 pointer-events-none select-none">
               {discountType === "percent" ? "%" : "₹"}
@@ -322,31 +325,24 @@ const SalesPage = () => {
                     onClick={() => removeItemRow(idx)}
                     disabled={items.length === 1}
                     className="flex h-8 w-8 items-center justify-center rounded-lg text-red-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-20 disabled:cursor-not-allowed"
-                    title="Remove item"
-                  >
-                    ✕
-                  </button>
+                  >✕</button>
                 </div>
               );
             })}
           </div>
 
           <div className="border-t border-brand-50 px-3 py-2">
-            <button
-              type="button"
-              onClick={addItemRow}
-              className="flex items-center gap-1.5 text-sm font-medium text-teal-600 hover:text-teal-700"
-            >
+            <button type="button" onClick={addItemRow}
+              className="flex items-center gap-1.5 text-sm font-medium text-teal-600 hover:text-teal-700">
               <span className="text-lg leading-none">＋</span> Add another item
             </button>
           </div>
         </div>
 
-        {/* ── Live bill preview (no GST) ── */}
+        {/* ── Live bill preview ── */}
         {hasValidItems && (
           <div className="rounded-lg bg-slate-50 border border-slate-200 px-4 py-3 space-y-1 text-sm">
             <p className="font-semibold text-slate-500 text-xs uppercase tracking-wide mb-2">Bill Preview</p>
-
             {items.map((it, idx) => {
               const prod = getProduct(it.productId);
               const qty  = Number(it.quantity) || 0;
@@ -358,11 +354,9 @@ const SalesPage = () => {
                 </div>
               );
             })}
-
             <div className="border-t border-slate-200 pt-2 mt-1 space-y-1 text-slate-600">
               <div className="flex justify-between">
-                <span>Subtotal</span>
-                <span>{currency(subtotal)}</span>
+                <span>Subtotal</span><span>{currency(subtotal)}</span>
               </div>
               {discAmount > 0 && (
                 <div className="flex justify-between text-red-500">
@@ -375,7 +369,6 @@ const SalesPage = () => {
                 </div>
               )}
             </div>
-
             <div className="border-t border-slate-300 pt-2 flex justify-between items-center">
               <span className="font-semibold text-slate-700">Bill Total</span>
               <span className="text-xl font-bold text-teal-700">{currency(billTotal)}</span>
@@ -383,10 +376,8 @@ const SalesPage = () => {
           </div>
         )}
 
-        <button
-          type="submit"
-          className="w-full rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700"
-        >
+        <button type="submit"
+          className="w-full rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700">
           Create sale
         </button>
       </form>
