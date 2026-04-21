@@ -144,7 +144,7 @@ const downloadInvoicePdf = asyncHandler(async (req, res) => {
   y += 16;
 
   doc.fontSize(7).font("Helvetica").fillColor("#444")
-     .text("Ph: 9956692347 / 9616324058", L, y, { align: "center", width: CW, lineBreak: false });
+     .text("Ph: 9956692347 / 9616524058", L, y, { align: "center", width: CW, lineBreak: false });
   y += 10;
 
   doc.fontSize(6.5).fillColor("#666")
