@@ -10,18 +10,22 @@ const env = require("./config/env");
 
 const app = express();
 
+// ✅ CORS
 app.use(
   cors({
-    origin: env.clientUrl,
+    origin: env.clientUrl || "*",
     credentials: true
   })
 );
+
+// ✅ Security & middlewares
 app.use(helmet());
 app.use(morgan("dev"));
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
 
+// ✅ Rate limiting
 app.use(
   "/api",
   rateLimit({
@@ -30,12 +34,15 @@ app.use(
   })
 );
 
+// ✅ Health check (IMPORTANT for Render)
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
+// ✅ Routes
 app.use("/api/v1", routes);
 
+// ✅ Error handlers
 app.use(notFound);
 app.use(errorHandler);
 
