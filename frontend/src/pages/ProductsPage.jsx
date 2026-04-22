@@ -1,3 +1,4 @@
+
 // import { useEffect, useState } from "react";
 // import toast from "react-hot-toast";
 // import DataTable from "../components/common/DataTable";
@@ -7,33 +8,38 @@
 
 // const initialForm = {
 //   name: "",
-//   category: "",
-//   price: "",
-//   costPrice: "",
 //   sku: "",
+//   costPrice: "",
+//   price: "",
 //   description: ""
+// };
+
+// const fieldLabels = {
+//   name:        "Product Name",
+//   sku:         "MRP Price",
+//   costPrice:   "Purchase Price",
+//   price:       "Selling Price",
+//   description: "Description (optional)"
 // };
 
 // const ProductsPage = () => {
 //   const { isAdmin } = usePermissions();
 //   const [products, setProducts] = useState([]);
 //   const [form, setForm] = useState(initialForm);
-//   const [qrModal, setQrModal] = useState(null); // { type: "qr"|"barcode", src, name }
+//   const [qrModal, setQrModal] = useState(null);
 
 //   const loadProducts = async () => {
 //     const data = await fetchProducts();
 //     setProducts(data.data || []);
 //   };
 
-//   useEffect(() => {
-//     loadProducts();
-//   }, []);
+//   useEffect(() => { loadProducts(); }, []);
 
 //   const onCreate = async (event) => {
 //     event.preventDefault();
 //     await createProduct({
 //       ...form,
-//       price: Number(form.price),
+//       price:     Number(form.price),
 //       costPrice: Number(form.costPrice)
 //     });
 //     toast.success("Product created");
@@ -61,11 +67,9 @@
 
 //   const columns = [
 //     { key: "name",      label: "Name" },
-//     { key: "category",  label: "Category" },
-//     { key: "sku",       label: "SKU" },
-//     { key: "price",     label: "Price",    render: (row) => currency(row.price) },
-//     { key: "costPrice", label: "Cost",     render: (row) => currency(row.costPrice) },
-//     { key: "gstRate",   label: "GST %" },
+//     { key: "sku",       label: "MRP Price" },
+//     { key: "costPrice", label: "Purchase Price", render: (row) => currency(row.costPrice) },
+//     { key: "price",     label: "Selling Price",  render: (row) => currency(row.price) },
 //     {
 //       key: "codes",
 //       label: "Codes",
@@ -123,7 +127,7 @@
 //           {Object.keys(initialForm).map((field) => (
 //             <input
 //               key={field}
-//               placeholder={field.replace(/([A-Z])/g, " $1").toLowerCase()}
+//               placeholder={fieldLabels[field]}
 //               className="rounded-lg border border-brand-100 px-3 py-2 text-sm"
 //               value={form[field]}
 //               onChange={(e) => setForm((prev) => ({ ...prev, [field]: e.target.value }))}
@@ -147,7 +151,6 @@
 
 
 
-
 import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import DataTable from "../components/common/DataTable";
@@ -165,7 +168,7 @@ const initialForm = {
 
 const fieldLabels = {
   name:        "Product Name",
-  sku:         "MRP Price",
+  sku:         "SKU",
   costPrice:   "Purchase Price",
   price:       "Selling Price",
   description: "Description (optional)"
@@ -178,22 +181,31 @@ const ProductsPage = () => {
   const [qrModal, setQrModal] = useState(null);
 
   const loadProducts = async () => {
-    const data = await fetchProducts();
-    setProducts(data.data || []);
+    try {
+      const data = await fetchProducts();
+      setProducts(data.data || []);
+    } catch {
+      toast.error("Failed to load products");
+    }
   };
 
   useEffect(() => { loadProducts(); }, []);
 
   const onCreate = async (event) => {
     event.preventDefault();
-    await createProduct({
-      ...form,
-      price:     Number(form.price),
-      costPrice: Number(form.costPrice)
-    });
-    toast.success("Product created");
-    setForm(initialForm);
-    await loadProducts();
+    try {
+      await createProduct({
+        ...form,
+        category:  "General",
+        price:     Number(form.price),
+        costPrice: Number(form.costPrice)
+      });
+      toast.success("Product created");
+      setForm(initialForm);
+      await loadProducts();
+    } catch (err) {
+      toast.error(err?.response?.data?.message || "Failed to create product");
+    }
   };
 
   const openQr = async (product) => {
@@ -216,7 +228,7 @@ const ProductsPage = () => {
 
   const columns = [
     { key: "name",      label: "Name" },
-    { key: "sku",       label: "MRP Price" },
+    { key: "sku",       label: "SKU" },
     { key: "costPrice", label: "Purchase Price", render: (row) => currency(row.costPrice) },
     { key: "price",     label: "Selling Price",  render: (row) => currency(row.price) },
     {
@@ -243,7 +255,6 @@ const ProductsPage = () => {
 
   return (
     <div className="space-y-4">
-      {/* QR / Barcode modal */}
       {qrModal && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
@@ -267,7 +278,6 @@ const ProductsPage = () => {
         </div>
       )}
 
-      {/* Create form (admin only) */}
       {isAdmin && (
         <form
           onSubmit={onCreate}
@@ -279,12 +289,15 @@ const ProductsPage = () => {
               placeholder={fieldLabels[field]}
               className="rounded-lg border border-brand-100 px-3 py-2 text-sm"
               value={form[field]}
+              type={["price", "costPrice"].includes(field) ? "number" : "text"}
               onChange={(e) => setForm((prev) => ({ ...prev, [field]: e.target.value }))}
               required={field !== "description"}
             />
           ))}
-
-          <button className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white md:col-span-3">
+          <button
+            type="submit"
+            className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white md:col-span-3"
+          >
             Add product
           </button>
         </form>
