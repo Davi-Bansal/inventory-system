@@ -75,10 +75,10 @@ const ProductsPage = () => {
 
   const columns = [
     { key: "name",      label: "Name" },
-    { key: "sku",       label: "MRP Price" },
-    { key: "costPrice", label: "Purchase Price", render: (row) => currency(row.costPrice) },
-    { key: "price",     label: "Selling Price",  render: (row) => currency(row.price) },
-    { key: "quantity",  label: "Quantity",        render: (row) => row.inventory?.quantity ?? 0 },
+    { key: "sku",       label: "MRP Price",       render: (row) => currency(row.sku) },
+    { key: "costPrice", label: "Purchase Price",   render: (row) => currency(row.costPrice) },
+    { key: "price",     label: "Selling Price",    render: (row) => currency(row.price) },
+    { key: "quantity",  label: "Quantity",         render: (row) => row.inventory?.quantity ?? 0 },
     {
       key: "codes",
       label: "Codes",
@@ -137,7 +137,7 @@ const ProductsPage = () => {
               placeholder={fieldLabels[field]}
               className="rounded-lg border border-brand-100 px-3 py-2 text-sm"
               value={form[field]}
-              type={["price", "costPrice"].includes(field) ? "number" : "text"}
+              type={["price", "costPrice", "sku"].includes(field) ? "number" : "text"}
               onChange={(e) => setForm((prev) => ({ ...prev, [field]: e.target.value }))}
               required={field !== "description"}
             />
